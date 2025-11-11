@@ -1355,6 +1355,8 @@ enum class ScriptModuleType {
   Text,
   Binary,
   Quoted,
+  // A ScriptModule that is a reference to an existing ScriptModule.
+  Reference,
 };
 
 // A ScriptModule is a module that may not yet be decoded. This allows for text
@@ -1384,6 +1386,41 @@ class ScriptModuleMixin : public ScriptModule {
   }
 
   ScriptModuleMixin() : ScriptModule(TypeEnum) {}
+};
+
+class ReferenceScriptModule
+    : public ScriptModuleMixin<ScriptModuleType::Reference> {
+public:
+  explicit ReferenceScriptModule(Module* referenced_module,
+                                 ScriptModule* script_module,
+                                 Var reference, Var name)
+      : referenced_module_(referenced_module),
+        script_module_(script_module),
+        reference_(std::move(reference)), name_(std::move(name)) {}
+
+  const Location& location() const override {
+    return reference_.loc;
+  }
+
+  [[nodiscard]] Module* referenced_module() const {
+    return referenced_module_;
+  }
+
+  [[nodiscard]] ScriptModule* script_module() const {
+    return script_module_;
+  }
+
+  // The name of the instance, if one was specified. E.g., $x in
+  // "(module instance $x $M)".
+  [[nodiscard]] Var name() const {
+    return name_;
+  }
+
+protected:
+  Module* referenced_module_;
+  ScriptModule* script_module_;
+  Var reference_;
+  Var name_;
 };
 
 class TextScriptModule : public ScriptModuleMixin<ScriptModuleType::Text> {
@@ -1461,6 +1498,7 @@ enum class CommandType {
   Module,
   ScriptModule,
   Action,
+  InstantiateModule,
   Register,
   AssertMalformed,
   AssertInvalid,
@@ -1507,6 +1545,13 @@ class ScriptModuleCommand : public CommandMixin<CommandType::ScriptModule> {
   // original contents (binary or quoted).
   Module module;
   std::unique_ptr<ScriptModule> script_module;
+};
+
+class InstantiateModuleCommand : public CommandMixin<CommandType::InstantiateModule> {
+public:
+  // The existing module to instantiate.
+  Module* module;
+  ScriptModule* script_module;
 };
 
 template <CommandType TypeEnum>

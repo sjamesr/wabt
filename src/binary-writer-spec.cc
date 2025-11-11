@@ -128,6 +128,7 @@ void BinaryWriterSpec::WriteCommandType(const Command& command) {
       "module",
       "module",
       "action",
+      "module instance",
       "register",
       "assert_malformed",
       "assert_invalid",

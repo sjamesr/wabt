@@ -749,15 +749,6 @@ bool WastParser::ParseBindVarOpt(std::string* name) {
   return true;
 }
 
-bool WastParser::ParseDefinitionOpt() {
-  WABT_TRACE(ParseDefinitionOpt);
-  if (!PeekMatch(TokenType::Definition)) {
-    return false;
-  }
-  (void)Consume();
-  return true;
-}
-
 Result WastParser::ParseVar(Var* out_var) {
   WABT_TRACE(ParseVar);
   if (PeekMatch(TokenType::Nat)) {
@@ -1231,7 +1222,7 @@ Result WastParser::ParseModule(std::unique_ptr<Module>* out_module) {
     // Starts with "(module". Allow text and binary modules, but no quoted
     // modules.
     CommandPtr command;
-    CHECK_RESULT(ParseModuleCommand(nullptr, &command));
+    CHECK_RESULT(ParseModuleCommand(&command));
     if (isa<ModuleCommand>(command.get())) {
       auto module_command = cast<ModuleCommand>(std::move(command));
       *module = std::move(module_command->module);
@@ -1261,7 +1252,7 @@ Result WastParser::ParseModule(std::unique_ptr<Module>* out_module) {
 
 Result WastParser::ParseScript(std::unique_ptr<Script>* out_script) {
   WABT_TRACE(ParseScript);
-  auto script = std::make_unique<Script>();
+  script_ = std::make_unique<Script>();
 
   // Don't consume the Lpar yet, even though it is required. This way the
   // sub-parser functions (e.g. ParseFuncModuleField) can consume it and keep
@@ -1271,9 +1262,9 @@ Result WastParser::ParseScript(std::unique_ptr<Script>* out_script) {
     auto command = std::make_unique<ModuleCommand>();
     command->module.loc = GetLocation();
     CHECK_RESULT(ParseModuleFieldList(&command->module));
-    script->commands.emplace_back(std::move(command));
+    script_->commands.emplace_back(std::move(command));
   } else if (IsCommand(PeekPair())) {
-    CHECK_RESULT(ParseCommandList(script.get(), &script->commands));
+    CHECK_RESULT(ParseCommandList());
   } else if (PeekMatch(TokenType::Eof)) {
     errors_->emplace_back(ErrorLevel::Warning, GetLocation(), "empty script");
   } else {
@@ -1283,7 +1274,7 @@ Result WastParser::ParseScript(std::unique_ptr<Script>* out_script) {
 
   EXPECT(Eof);
   if (!HasError()) {
-    *out_script = std::move(script);
+    *out_script = std::move(script_);
     return Result::Ok;
   } else {
     return Result::Error;
@@ -3535,13 +3526,12 @@ Result WastParser::ParseGlobalType(Global* global) {
   return Result::Ok;
 }
 
-Result WastParser::ParseCommandList(Script* script,
-                                    CommandPtrVector* commands) {
+Result WastParser::ParseCommandList() {
   WABT_TRACE(ParseCommandList);
   while (IsCommand(PeekPair())) {
     CommandPtr command;
-    if (Succeeded(ParseCommand(script, &command))) {
-      commands->push_back(std::move(command));
+    if (Succeeded(ParseCommand(&command))) {
+      script_->commands.push_back(std::move(command));
     } else {
       CHECK_RESULT(Synchronize(IsCommand));
     }
@@ -3549,7 +3539,7 @@ Result WastParser::ParseCommandList(Script* script,
   return Result::Ok;
 }
 
-Result WastParser::ParseCommand(Script* script, CommandPtr* out_command) {
+Result WastParser::ParseCommand(CommandPtr* out_command) {
   WABT_TRACE(ParseCommand);
   switch (Peek(1)) {
     case TokenType::AssertException:
@@ -3578,7 +3568,7 @@ Result WastParser::ParseCommand(Script* script, CommandPtr* out_command) {
       return ParseActionCommand(out_command);
 
     case TokenType::Module:
-      return ParseModuleCommand(script, out_command);
+      return ParseModuleCommand(out_command);
 
     case TokenType::Register:
       return ParseRegisterCommand(out_command);
@@ -3664,7 +3654,7 @@ Result WastParser::ParseActionCommand(CommandPtr* out_command) {
   return Result::Ok;
 }
 
-Result WastParser::ParseModuleCommand(Script* script, CommandPtr* out_command) {
+Result WastParser::ParseModuleCommand(CommandPtr* out_command) {
   WABT_TRACE(ParseModuleCommand);
   std::unique_ptr<ScriptModule> script_module;
   CHECK_RESULT(ParseScriptModule(&script_module));
@@ -3672,6 +3662,22 @@ Result WastParser::ParseModuleCommand(Script* script, CommandPtr* out_command) {
   Module* module = nullptr;
 
   switch (script_module->type()) {
+    case ScriptModuleType::Reference: {
+      auto command = std::make_unique<InstantiateModuleCommand>();
+      auto ref = cast<ReferenceScriptModule>(script_module.get());
+      command->module = ref->referenced_module();
+      command->script_module = ref->script_module();
+
+      Index command_index = script_->commands.size();
+      if (script_ != nullptr && ref->name().is_name()) {
+        script_->module_bindings.emplace(
+            ref->name().name(), Binding(ref->name().loc, command_index));
+      }
+
+      *out_command = std::move(command);
+      return Result::Ok;
+    }
+
     case ScriptModuleType::Text: {
       if (script_module->is_definition) {
         auto command = std::make_unique<ScriptModuleCommand>();
@@ -3748,11 +3754,11 @@ Result WastParser::ParseModuleCommand(Script* script, CommandPtr* out_command) {
   }
 
   // script is nullptr when ParseModuleCommand is called from ParseModule.
-  if (script) {
-    Index command_index = script->commands.size();
+  if (script_ != nullptr) {
+    Index command_index = script_->commands.size();
 
     if (!module->name.empty()) {
-      script->module_bindings.emplace(module->name,
+      script_->module_bindings.emplace(module->name,
                                       Binding(module->loc, command_index));
     }
 
@@ -3872,10 +3878,68 @@ Result WastParser::ParseScriptModule(
   Location loc = GetLocation();
   EXPECT(Module);
 
-  bool is_definition = ParseDefinitionOpt();
+  bool is_instance = false;
+  bool is_definition = false;
 
+  bool search = true;
+  while (search) {
+    switch (Peek()) {
+      case TokenType::Instance:
+        is_instance = true;
+        (void)Consume();
+        break;
+      case TokenType::Definition:
+        is_definition = true;
+        (void)Consume();
+        break;
+      default:
+        search = false;
+        break;
+    }
+  }
+
+  if (is_definition && is_instance) {
+    Error(loc, "cannot specify both 'instance' or 'definition'");
+    return Result::Error;
+  }
+
+  Var name_var;
   std::string name;
-  ParseBindVarOpt(&name);
+  if (PeekMatch(TokenType::Var)) {
+    name = GetToken().text();
+    CHECK_RESULT(ParseVar(&name_var));
+  }
+
+  if (is_instance) {
+    Var ref;
+    CHECK_RESULT(ParseVar(&ref));
+
+    // Find the ScriptModule referenced by ref.
+    Index idx = script_->module_bindings.FindIndex(ref);
+    if (idx == kInvalidIndex) {
+      Error(ref.loc, "module not found");
+      return Result::Error;
+    }
+
+    if (idx >= script_->commands.size()) {
+      Error(ref.loc, "invalid index %d", idx);
+      return Result::Error;
+    }
+
+    Command* command = script_->commands[idx].get();
+    if (!isa<ScriptModuleCommand>(command)) {
+      Error(ref.loc, "expected a reference to a ScriptModuleCommand");
+      return Result::Error;
+    }
+
+    auto script_module = cast<ScriptModuleCommand>(command);
+    auto rsm = std::make_unique<ReferenceScriptModule>(
+        &script_module->module, script_module->script_module.get(), ref,
+        name_var);
+    *out_module = std::move(rsm);
+    EXPECT(Rpar);
+    return Result::Ok;
+  }
 
   switch (Peek()) {
     case TokenType::Bin: {

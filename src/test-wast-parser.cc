@@ -136,3 +136,41 @@ TEST(WastParser, ModuleDefinition) {
   ASSERT_NE(mod_cmd, nullptr);
   ASSERT_TRUE(mod_cmd->script_module->is_definition);
 }
+
+TEST(WastParser, ModuleInstance) {
+  std::string text = R"(
+(module definition $M (func (export "f")))
+(module instance $x $M)
+(register "mod")
+(module (func (import "mod" "f")))
+  )";
+
+  Errors errors;
+  auto lexer =
+      WastLexer::CreateBufferLexer("test", text.c_str(), text.size(), &errors);
+  Features features;
+  WastParseOptions options(features);
+
+  std::unique_ptr<Script> script;
+  Result result = ParseWastScript(lexer.get(), &script, &errors, &options);
+  ASSERT_EQ(result, Result::Ok);
+  ASSERT_EQ(script->commands.size(), 4U);
+
+  // First command should contain the module definition.
+  Module* mod_to_instantiate;
+  ScriptModule* script_module_to_instantiate;
+  {
+    auto *cmd = script->commands[0].get();
+    auto *script_cmd = cast<ScriptModuleCommand>(cmd);
+    mod_to_instantiate = &script_cmd->module;
+    script_module_to_instantiate = script_cmd->script_module.get();
+  }
+
+  {
+    auto* cmd = script->commands[1].get();
+    auto* mod_cmd = cast<InstantiateModuleCommand>(cmd);
+    ASSERT_EQ(mod_cmd->module, mod_to_instantiate);
+    ASSERT_EQ(mod_cmd->script_module, script_module_to_instantiate);
+  }
+}
+

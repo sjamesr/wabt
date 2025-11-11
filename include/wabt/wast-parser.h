@@ -160,7 +160,6 @@ class WastParser {
   Result Synchronize(SynchronizeFunc);
 
   bool ParseBindVarOpt(std::string* name);
-  bool ParseDefinitionOpt();
   Result ParseVar(Var* out_var);
   bool ParseVarOpt(Var* out_var, Var default_var = Var());
   Result ParseOffsetExpr(ExprList* out_expr_list);
@@ -267,8 +266,8 @@ class WastParser {
   Result ParseMemoryBinaryExpr(Location, std::unique_ptr<Expr>*);
   Result ParseSimdLane(Location, uint64_t*);
 
-  Result ParseCommandList(Script*, CommandPtrVector*);
-  Result ParseCommand(Script*, CommandPtr*);
+  Result ParseCommandList();
+  Result ParseCommand(CommandPtr*);
   Result ParseAssertExceptionCommand(CommandPtr*);
   Result ParseAssertExhaustionCommand(CommandPtr*);
   Result ParseAssertInvalidCommand(CommandPtr*);
@@ -278,7 +277,7 @@ class WastParser {
   Result ParseAssertTrapCommand(CommandPtr*);
   Result ParseAssertUnlinkableCommand(CommandPtr*);
   Result ParseActionCommand(CommandPtr*);
-  Result ParseModuleCommand(Script*, CommandPtr*);
+  Result ParseModuleCommand(CommandPtr*);
   Result ParseRegisterCommand(CommandPtr*);
   Result ParseInputCommand(CommandPtr*);
   Result ParseOutputCommand(CommandPtr*);
@@ -306,6 +305,9 @@ class WastParser {
   Index last_module_index_ = kInvalidIndex;
   Errors* errors_;
   WastParseOptions* options_;
+
+  // The script being parsed, or nullptr if there is none.
+  std::unique_ptr<Script> script_;
 
   // Reference types can have names or indicies. For example (ref $foo)
   // represents a type which name is $foo, and (ref 5) represents
